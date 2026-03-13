@@ -5,10 +5,13 @@
 # Total: 9 (2D USG) + 6 (3D) = 15 jobs, round-robin on 8 GPUs
 # =====================================================================
 
-PYTHON="/mnt/bn/ic-vlm-hl/personal/lichenxin/proj/PAMI_EXT.U-KAN/code/.venv/bin/python"
-DATA_DIR="/mnt/bn/ic-vlm-hl/personal/lichenxin/proj/PAMI_EXT.U-KAN/code/U-KAN/data"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PYTHON="${PYTHON:-python}"
+DATA_ROOT="${DATA_ROOT:-${SCRIPT_DIR}/../data}"
+DATA_DIR="${DATA_DIR:-${DATA_ROOT}}"
 OUTPUT_DIR="outputs"
 TAG="batch3_$(date +%Y%m%d_%H%M%S)"
+cd "$SCRIPT_DIR"
 
 SEEDS=(2981 6142 1187)
 GPU=0

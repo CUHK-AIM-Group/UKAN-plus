@@ -1,87 +1,61 @@
 # Diffusion U-KAN++
 
-> [**U-KAN Makes Strong Backbone for Medical Image Segmentation and Generation**](https://arxiv.org/abs/2406.02918)<br>
-> [Chenxin Li](https://xggnet.github.io/)\*, [Xinyu Liu](https://xinyuliu-jeffrey.github.io/)\*, [Wuyang Li](https://wymancv.github.io/wuyang.github.io/)\*, [Cheng Wang](https://scholar.google.com/citations?user=AM7gvyUAAAAJ&hl=en)\*, [Hengyu Liu](), [Yixuan Yuan](https://www.ee.cuhk.edu.hk/~yxyuan/people/people.htm)<sup>✉</sup><br>The Chinese Univerisity of Hong Kong
+Diffusion-based generation branch of the U-KAN++ codebase.
 
-Contact: wuyangli@cuhk.edu.hk
+This directory contains the core training and sampling code for the generative component used in the U-KAN / U-KAN++ line of work. Local datasets, checkpoints, and generated outputs are intentionally excluded from the repository.
 
-## 💡 Environment 
-You can change the torch and Cuda versions to satisfy your device.
+## Setup
+
 ```bash
-conda create --name UKAN python=3.10
-conda activate UKAN
-conda install cudatoolkit=11.3
-pip install -r requirement.txt
+conda create -n ukanpp python=3.10
+conda activate ukanpp
+pip install -r requirements.txt
 ```
 
-## 🖼️ Gallery of Diffusion UKAN 
+## Directory Layout
 
-![image](./assets/gen.png)
+- `Diffusion/`: model definitions, diffusion process, and training utilities
+- `training_scripts/`: lightweight dataset-specific launch scripts
+- `tools/`: simple preprocessing helpers
+- `Main.py`: training entry point
+- `Main_Test.py`: sampling / test entry point
+- `run_table11.sh`: launch script for the main BUSI / GlaS / CVC generation runs
 
-## 📚 Prepare datasets
-Download the pre-processed dataset from [Onedrive](https://gocuhk-my.sharepoint.com/:u:/g/personal/wuyangli_cuhk_edu_hk/ESqX-V_eLSBEuaJXAzf64JMB16xF9kz3661pJSwQ-hOspg?e=XdABCH) and unzip it into the project folder. The data is pre-processed by the scripts in [tools](./tools).
-```
-Diffusion_UKAN_plus
-|    data
-|    └─ cvc
-|        └─ images_64
-|    └─ busi
-|        └─ images_64
-|    └─ glas
-|        └─ images_64
-```
-## 📦 Prepare pre-trained models
+## Data
 
-Download released_models from [Onedrive](https://gocuhk-my.sharepoint.com/:u:/g/personal/wuyangli_cuhk_edu_hk/EUVSH8QFUmpJlxyoEj8Pr2IB8PzGbVJg53rc6GcqxGgLDg?e=a4glNt) and unzip it in the project folder.
-```
-Diffusion_UKAN_plus
-|    released_models
-|    └─ ukan_cvc
-|        └─ FinalCheck   # generated toy images (see next section)
-|        └─ Gens         # the generated images used for evaluation in our paper
-|        └─ Tmp          # saved generated images during model training with a 50-epoch interval
-|        └─ Weights      # The final checkpoint
-|        └─ FID.txt      # raw evaluation data 
-|        └─ IS.txt       # raw evaluation data  
-|    └─ ukan_busi
-|    └─ ukan_glas
-```
-## 🧸 Toy example
-Images will be generated in `released_models/ukan_cvc/FinalCheck` by running this:
+By default, the code expects local data folders under:
 
-```python
+```text
+Diffusion_UKAN_plus/data/
+  busi/
+  glas/
+  cvc/
+```
+
+These folders are ignored by Git and should be prepared locally.
+
+## Quick Start
+
+Train:
+
+```bash
+python Main.py --model UKan_PP_Hybrid --dataset busi --epoch 5000
+```
+
+Sample:
+
+```bash
 python Main_Test.py
 ```
-## 🔥 Training
-<!-- You may need to modify the dirs slightly. -->
-Please refer to the [training_scripts](./training_scripts) folder. Besides, you can play with different network variations by modifying `MODEL` according to the following dictionary,
 
-```python
-model_dict = {
-    'UNet': UNet,
-    'UNet_ConvKan': UNet_ConvKan,
-    'UMLP': UMLP,
-    'UKan_Hybrid': UKan_Hybrid,
-    'UNet_Baseline': UNet_Baseline,
-}
+Portable launcher example:
+
+```bash
+PYTHON=python ./run_table11.sh
 ```
 
+## Notes
 
-## 🤞 Acknowledgement 
-Thanks for 
-We mainly appreciate these excellent projects
-- [Simple DDPM](https://github.com/zoubohao/DenoisingDiffusionProbabilityModel-ddpm-) 
-- [Kolmogorov-Arnold Network](https://github.com/mintisan/awesome-kan) 
-- [Efficient Kolmogorov-Arnold Network](https://github.com/Blealtan/efficient-kan.git)
-
-
-## 📜Citation
-If you find this work helpful for your project, please consider citing the following paper:
-```
-@article{li2024ukan,
-  title={U-KAN Makes Strong Backbone for Medical Image Segmentation and Generation},
-  author={Li, Chenxin and Liu, Xinyu and Li, Wuyang and Wang, Cheng and Liu, Hengyu and Yuan, Yixuan},
-  journal={arXiv preprint arXiv:2406.02918},
-  year={2024}
-}
-```
+- The code keeps the original model naming used by the generation branch, such as `UKan_PP_Hybrid`.
+- For larger-scale runs, set dataset paths, save roots, and CUDA devices explicitly in your shell environment.
+- Generated samples and released checkpoints are intentionally not versioned in this cleaned repository.

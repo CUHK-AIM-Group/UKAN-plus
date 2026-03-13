@@ -2,9 +2,12 @@
 # Table IV: U-KAN++ 3D on BraTS 2021
 # 3 seeds, 300 epochs each
 
-PYTHON="/mnt/bn/ic-vlm-hl/personal/lichenxin/proj/PAMI_EXT.U-KAN/code/.venv/bin/python"
-DATA_DIR="/mnt/bn/ic-vlm-hl/personal/lichenxin/proj/PAMI_EXT.U-KAN/code/U-KAN/data/brats2021"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PYTHON="${PYTHON:-python}"
+DATA_ROOT="${DATA_ROOT:-${SCRIPT_DIR}/../data}"
+DATA_DIR="${DATA_DIR:-${DATA_ROOT}/brats2021}"
 OUTPUT_DIR="outputs_3d"
+cd "$SCRIPT_DIR"
 
 SEEDS=(2981 6142 1187)
 GPU=0

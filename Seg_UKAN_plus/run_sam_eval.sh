@@ -2,8 +2,10 @@
 # Tables IX, X + Figures 1, 2: SAM Evaluation
 # Requires trained U-KAN++ checkpoints from Table I
 
-PYTHON="/mnt/bn/ic-vlm-hl/personal/lichenxin/proj/PAMI_EXT.U-KAN/code/.venv/bin/python"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PYTHON="${PYTHON:-python}"
 OUTPUT_DIR="outputs"
+cd "$SCRIPT_DIR"
 
 # Run SAM evaluation on BUSI (seed 2981)
 CUDA_VISIBLE_DEVICES=0 $PYTHON sam_eval.py \

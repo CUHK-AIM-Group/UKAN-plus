@@ -2,13 +2,16 @@
 # Run baseline models on ISIC 2018 using segmentation_models_pytorch
 # Only 1 seed (2981) since these are non-main-table baselines
 
-PYTHON="/mnt/bn/ic-vlm-hl/personal/lichenxin/proj/PAMI_EXT.U-KAN/code/.venv/bin/python"
-DATA_DIR="/mnt/bn/ic-vlm-hl/personal/lichenxin/proj/PAMI_EXT.U-KAN/code/U-KAN/data"
-WORK_DIR="/mnt/bn/ic-vlm-hl/personal/lichenxin/proj/PAMI_EXT.U-KAN/code/U-KAN/Seg_UKAN"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PYTHON="${PYTHON:-python}"
+DATA_ROOT="${DATA_ROOT:-${SCRIPT_DIR}/../data}"
+DATA_DIR="${DATA_DIR:-${DATA_ROOT}}"
+WORK_DIR="${WORK_DIR:-${SCRIPT_DIR}}"
 LOG_DIR="$WORK_DIR/logs"
 COMMON="--dataset isic2018 --data_dir $DATA_DIR --epochs 400 --batch_size 8 --input_h 256 --input_w 256 --output_dir outputs"
 
 GPU=0
+mkdir -p "$LOG_DIR"
 
 # Models to run (using train_baseline.py)
 for MODEL in unet attunet unetpp unext; do

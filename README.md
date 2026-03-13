@@ -64,7 +64,7 @@ Train 2D segmentation:
 
 ```bash
 cd Seg_UKAN_plus
-python train.py --arch UKAN --dataset busi --input_w 256 --input_h 256 --name busi_ukanpp --data_dir ./inputs
+python train.py --arch UKANPP --dataset busi --input_w 256 --input_h 256 --name busi_ukanpp --data_dir /path/to/data_root
 ```
 
 Train 3D segmentation:
@@ -100,6 +100,12 @@ Run diffusion sampling / test:
 ```bash
 cd Diffusion_UKAN_plus
 python Main_Test.py
+```
+
+Portable launcher example:
+
+```bash
+PYTHON=python DATA_ROOT=/path/to/data_root ./Seg_UKAN_plus/run_table1.sh
 ```
 
 ## Included Experiment Scripts

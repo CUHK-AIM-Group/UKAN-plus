@@ -2,8 +2,10 @@
 # Table XI: Diffusion Generation Quality (FID/IS) on BUSI/GlaS/CVC
 # U-KAN++ (UKan_PP_Hybrid) on 3 datasets
 
-PYTHON="/mnt/bn/ic-vlm-hl/personal/lichenxin/proj/PAMI_EXT.U-KAN/code/.venv/bin/python"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PYTHON="${PYTHON:-python}"
 SAVE_ROOT="./Output/"
+cd "$SCRIPT_DIR"
 GPU=0
 
 # BUSI: 5000 epochs (as per original training script)

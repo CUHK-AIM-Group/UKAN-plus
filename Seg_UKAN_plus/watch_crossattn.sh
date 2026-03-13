@@ -1,9 +1,11 @@
 #!/bin/bash
 # Monitor and auto-restart crossattn runs if they die
-cd /mnt/bn/ic-vlm-hl/personal/lichenxin/proj/PAMI_EXT.U-KAN/code/U-KAN/Seg_UKAN
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
 
-PYTHON="/mnt/bn/ic-vlm-hl/personal/lichenxin/proj/PAMI_EXT.U-KAN/code/.venv/bin/python"
-DATA_DIR="/mnt/bn/ic-vlm-hl/personal/lichenxin/proj/PAMI_EXT.U-KAN/code/U-KAN/data"
+PYTHON="${PYTHON:-python}"
+DATA_ROOT="${DATA_ROOT:-${SCRIPT_DIR}/../data}"
+DATA_DIR="${DATA_DIR:-${DATA_ROOT}}"
 COMMON="--dataset busi --data_dir $DATA_DIR --epochs 400 --batch_size 8 --input_h 256 --input_w 256 --output_dir outputs --arch UKANPP --ms_stages all --grid_sizes 3,5,10 --fusion_type softmax --cross_branch_attn"
 
 while true; do

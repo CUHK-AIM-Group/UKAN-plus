@@ -5,10 +5,13 @@
 # =====================================================================
 # GPU assignment: 8 GPUs available (0-7), one job per GPU
 
-PYTHON="/mnt/bn/ic-vlm-hl/personal/lichenxin/proj/PAMI_EXT.U-KAN/code/.venv/bin/python"
-DATA_DIR="/mnt/bn/ic-vlm-hl/personal/lichenxin/proj/PAMI_EXT.U-KAN/code/U-KAN/data"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PYTHON="${PYTHON:-python}"
+DATA_ROOT="${DATA_ROOT:-${SCRIPT_DIR}/../data}"
+DATA_DIR="${DATA_DIR:-${DATA_ROOT}}"
 OUTPUT_DIR="outputs"
 TAG="stag400ep_$(date +%Y%m%d_%H%M%S)"
+cd "$SCRIPT_DIR"
 
 SEEDS=(2981 6142 1187)
 GPU=0

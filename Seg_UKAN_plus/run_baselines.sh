@@ -2,9 +2,10 @@
 # Train baseline methods for qualitative comparison and table filling
 set -e
 
-PYTHON="/mnt/bn/ic-vlm-hl/personal/lichenxin/proj/PAMI_EXT.U-KAN/code/.venv/bin/python"
-SCRIPT="/mnt/bn/ic-vlm-hl/personal/lichenxin/proj/PAMI_EXT.U-KAN/code/U-KAN/Seg_UKAN/train_baseline.py"
-cd /mnt/bn/ic-vlm-hl/personal/lichenxin/proj/PAMI_EXT.U-KAN/code/U-KAN/Seg_UKAN
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PYTHON="${PYTHON:-python}"
+SCRIPT="${SCRIPT_DIR}/train_baseline.py"
+cd "$SCRIPT_DIR"
 
 GPU=0
 
