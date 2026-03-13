@@ -1,0 +1,31 @@
+#!/bin/bash
+# Table II: U-KAN++ on Synapse (2D slice training, volume evaluation)
+# 3 seeds, 150 epochs each (following TransUNet protocol)
+
+PYTHON="/mnt/bn/ic-vlm-hl/personal/lichenxin/proj/PAMI_EXT.U-KAN/code/.venv/bin/python"
+DATA_DIR="/mnt/bn/ic-vlm-hl/personal/lichenxin/proj/PAMI_EXT.U-KAN/code/U-KAN/data/synapse"
+OUTPUT_DIR="outputs"
+
+SEEDS=(2981 6142 1187)
+GPU=0
+
+for seed in "${SEEDS[@]}"; do
+  CUDA_VISIBLE_DEVICES=$GPU $PYTHON train_multiclass.py \
+    --name "synapse_ukanpp_seed${seed}" \
+    --dataset synapse \
+    --data_dir "$DATA_DIR" \
+    --num_classes 9 \
+    --img_size 224 \
+    --epochs 150 \
+    --batch_size 24 \
+    --dataseed $seed \
+    --arch UKANPP \
+    --grid_sizes 3,5,10 \
+    --fusion_type softmax \
+    --eval_interval 10 \
+    --output_dir $OUTPUT_DIR &
+  GPU=$(( (GPU + 1) % 8 ))
+done
+
+wait
+echo "=== Table II Synapse experiments complete ==="
