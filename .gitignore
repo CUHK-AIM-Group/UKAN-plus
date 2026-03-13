@@ -15,11 +15,11 @@ venv/
 *.ckpt
 *.bin
 
-Seg_UKAN/inputs/
-Seg_UKAN/logs/
-Seg_UKAN/outputs/
-Seg_UKAN/outputs_3d/
+Seg_UKAN_plus/inputs/
+Seg_UKAN_plus/logs/
+Seg_UKAN_plus/outputs/
+Seg_UKAN_plus/outputs_3d/
 
-Diffusion_UKAN/data/
-Diffusion_UKAN/Output/
-Diffusion_UKAN/released_models/
+Diffusion_UKAN_plus/data/
+Diffusion_UKAN_plus/Output/
+Diffusion_UKAN_plus/released_models/

@@ -1,4 +1,4 @@
-# Diffusion UKAN (arxiv)
+# Diffusion U-KAN++
 
 > [**U-KAN Makes Strong Backbone for Medical Image Segmentation and Generation**](https://arxiv.org/abs/2406.02918)<br>
 > [Chenxin Li](https://xggnet.github.io/)\*, [Xinyu Liu](https://xinyuliu-jeffrey.github.io/)\*, [Wuyang Li](https://wymancv.github.io/wuyang.github.io/)\*, [Cheng Wang](https://scholar.google.com/citations?user=AM7gvyUAAAAJ&hl=en)\*, [Hengyu Liu](), [Yixuan Yuan](https://www.ee.cuhk.edu.hk/~yxyuan/people/people.htm)<sup>✉</sup><br>The Chinese Univerisity of Hong Kong
@@ -21,7 +21,7 @@ pip install -r requirement.txt
 ## 📚 Prepare datasets
 Download the pre-processed dataset from [Onedrive](https://gocuhk-my.sharepoint.com/:u:/g/personal/wuyangli_cuhk_edu_hk/ESqX-V_eLSBEuaJXAzf64JMB16xF9kz3661pJSwQ-hOspg?e=XdABCH) and unzip it into the project folder. The data is pre-processed by the scripts in [tools](./tools).
 ```
-Diffusion_UKAN
+Diffusion_UKAN_plus
 |    data
 |    └─ cvc
 |        └─ images_64
@@ -34,7 +34,7 @@ Diffusion_UKAN
 
 Download released_models from [Onedrive](https://gocuhk-my.sharepoint.com/:u:/g/personal/wuyangli_cuhk_edu_hk/EUVSH8QFUmpJlxyoEj8Pr2IB8PzGbVJg53rc6GcqxGgLDg?e=a4glNt) and unzip it in the project folder.
 ```
-Diffusion_UKAN
+Diffusion_UKAN_plus
 |    released_models
 |    └─ ukan_cvc
 |        └─ FinalCheck   # generated toy images (see next section)
@@ -85,4 +85,3 @@ If you find this work helpful for your project, please consider citing the follo
   year={2024}
 }
 ```
-
