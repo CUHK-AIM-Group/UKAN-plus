@@ -1,5 +1,7 @@
-"""Train baseline models (U-Net, Att-UNet, UNet++, TransUNet, U-NeXt) on any dataset.
-Uses segmentation_models_pytorch for standard architectures.
+"""Train baseline models (U-Net, Att-UNet, UNet++, TransUNet, U-NeXt, Rolling-UNet,
+U-Mamba) on any dataset.
+U-Net, Att-UNet and UNet++ use segmentation_models_pytorch; the other baselines
+are built from their official implementations (see baselines.py).
 Reuses the same dataset/training loop as train.py for fair comparison.
 """
 import argparse, os, random, csv, yaml, shutil
@@ -12,7 +14,6 @@ import torch.backends.cudnn as cudnn
 from torch.optim import lr_scheduler
 from collections import OrderedDict
 from glob import glob
-from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 
 from albumentations.augmentations import transforms
@@ -20,10 +21,9 @@ from albumentations.augmentations import geometric
 from albumentations.core.composition import Compose, OneOf
 from albumentations import RandomRotate90, Resize
 
-import segmentation_models_pytorch as smp
-
 import losses
-from dataset import Dataset
+from baselines import BASELINES_2D, build_baseline_2d
+from dataset import Dataset, split_ids
 from metrics import iou_score
 from utils import AverageMeter, str2bool
 
@@ -39,23 +39,13 @@ def seed_torch(seed=1029):
     torch.backends.cudnn.deterministic = True
 
 
-ARCH_MAP = {
-    'unet':    lambda: smp.Unet(encoder_name='resnet34', encoder_weights='imagenet',
-                                 in_channels=3, classes=1),
-    'attunet': lambda: smp.Unet(encoder_name='resnet34', encoder_weights='imagenet',
-                                 in_channels=3, classes=1,
-                                 decoder_attention_type='scse'),
-    'unetpp':  lambda: smp.UnetPlusPlus(encoder_name='resnet34', encoder_weights='imagenet',
-                                         in_channels=3, classes=1),
-    'transunet': lambda: smp.Unet(encoder_name='mit_b2', encoder_weights='imagenet',
-                                    in_channels=3, classes=1),
-}
-
-
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('--name', required=True)
-    parser.add_argument('--arch', required=True, choices=list(ARCH_MAP.keys()))
+    parser.add_argument('--arch', required=True, choices=BASELINES_2D)
+    parser.add_argument('--no_pretrained', action='store_true',
+                        help='random initialization instead of ImageNet encoder (smp) or '
+                             'TRANSUNET_WEIGHTS (TransUNet) initialization')
     parser.add_argument('--dataset', default='isic2018')
     parser.add_argument('--data_dir', default='../data')
     parser.add_argument('--output_dir', default='outputs')
@@ -126,7 +116,8 @@ def main():
         yaml.dump(config, f)
 
     # Model
-    model = ARCH_MAP[config['arch']]().cuda()
+    model = build_baseline_2d(config['arch'], config['input_h'],
+                              pretrained=not config['no_pretrained']).cuda()
     print(f"Model: {config['arch']}, params: {sum(p.numel() for p in model.parameters())/1e6:.2f}M")
 
     # Loss
@@ -143,7 +134,8 @@ def main():
 
     img_ids = sorted(glob(os.path.join(config['data_dir'], dataset_name, 'images', '*' + img_ext)))
     img_ids = [os.path.splitext(os.path.basename(p))[0] for p in img_ids]
-    train_ids, val_ids = train_test_split(img_ids, test_size=0.2, random_state=config['dataseed'])
+    train_ids = split_ids(img_ids, config['data_dir'], dataset_name, 'train', config['dataseed'])
+    val_ids = split_ids(img_ids, config['data_dir'], dataset_name, 'val', config['dataseed'])
 
     train_transform = Compose([RandomRotate90(), geometric.transforms.Flip(),
                                Resize(config['input_h'], config['input_w']), transforms.Normalize()])
@@ -188,6 +180,21 @@ def main():
     df = pd.DataFrame(log_rows, columns=['epoch', 'lr', 'loss', 'iou', 'val_loss', 'val_iou', 'val_dice'])
     df.to_csv(os.path.join(exp_dir, 'log.csv'), index=False)
     print(f"Best IoU: {best_iou:.4f}")
+
+    # Separate test split (e.g. official ISIC 2018): evaluate the best validation checkpoint
+    test_ids = split_ids(img_ids, config['data_dir'], dataset_name, 'test', config['dataseed'])
+    if test_ids != val_ids:
+        test_dataset = Dataset(img_ids=test_ids,
+                               img_dir=os.path.join(config['data_dir'], dataset_name, 'images'),
+                               mask_dir=os.path.join(config['data_dir'], dataset_name, 'masks'),
+                               img_ext=img_ext, mask_ext=mask_ext,
+                               num_classes=config['num_classes'], transform=val_transform)
+        test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=config['batch_size'],
+                                                   shuffle=False, num_workers=config['num_workers'], drop_last=False)
+        model.load_state_dict(torch.load(os.path.join(exp_dir, 'model.pth')))
+        _, test_iou, test_dice = validate(test_loader, model, criterion)
+        pd.DataFrame([{'iou': test_iou, 'dice': test_dice}]).to_csv(os.path.join(exp_dir, 'test.csv'), index=False)
+        print(f"Test ({len(test_ids)} images): IoU {test_iou:.4f} - Dice {test_dice:.4f}")
 
 
 if __name__ == '__main__':

@@ -16,7 +16,6 @@ from albumentations.augmentations import transforms
 from albumentations.augmentations import geometric
 
 from albumentations.core.composition import Compose, OneOf
-from sklearn.model_selection import train_test_split
 from torch.optim import lr_scheduler
 from tqdm import tqdm
 from albumentations import RandomRotate90, Resize
@@ -24,7 +23,7 @@ from albumentations import RandomRotate90, Resize
 import archs
 
 import losses
-from dataset import Dataset
+from dataset import Dataset, split_ids
 
 from metrics import iou_score, indicators
 
@@ -376,7 +375,8 @@ def main():
     img_ids = sorted(glob(os.path.join(config['data_dir'], config['dataset'], 'images', '*' + img_ext)))
     img_ids = [os.path.splitext(os.path.basename(p))[0] for p in img_ids]
 
-    train_img_ids, val_img_ids = train_test_split(img_ids, test_size=0.2, random_state=config['dataseed'])
+    train_img_ids = split_ids(img_ids, config['data_dir'], config['dataset'], 'train', config['dataseed'])
+    val_img_ids = split_ids(img_ids, config['data_dir'], config['dataset'], 'val', config['dataseed'])
 
     train_transform = Compose([
         RandomRotate90(),
@@ -486,6 +486,29 @@ def main():
             break
 
         torch.cuda.empty_cache()
-    
+
+    # Separate test split (e.g. official ISIC 2018): evaluate the best validation checkpoint
+    test_img_ids = split_ids(img_ids, config['data_dir'], config['dataset'], 'test', config['dataseed'])
+    if test_img_ids != val_img_ids:
+        test_dataset = Dataset(
+            img_ids=test_img_ids,
+            img_dir=os.path.join(config['data_dir'], config['dataset'], 'images'),
+            mask_dir=os.path.join(config['data_dir'], config['dataset'], 'masks'),
+            img_ext=img_ext,
+            mask_ext=mask_ext,
+            num_classes=config['num_classes'],
+            transform=val_transform)
+        test_loader = torch.utils.data.DataLoader(
+            test_dataset,
+            batch_size=config['batch_size'],
+            shuffle=False,
+            num_workers=config['num_workers'],
+            drop_last=False)
+        model.load_state_dict(torch.load(f'{output_dir}/{exp_name}/model.pth'))
+        test_log = validate(config, test_loader, model, criterion)
+        pd.DataFrame([{'iou': test_log['iou'], 'dice': test_log['dice']}]).to_csv(
+            f'{output_dir}/{exp_name}/test.csv', index=False)
+        print('test (%d images): iou %.4f - dice %.4f' % (len(test_img_ids), test_log['iou'], test_log['dice']))
+
 if __name__ == '__main__':
     main()

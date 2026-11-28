@@ -1,8 +1,8 @@
 # Diffusion U-KAN++
 
-Diffusion-based generation branch of the U-KAN++ codebase.
+Standalone diffusion models of the U-KAN++ codebase.
 
-This directory contains the core training and sampling code for the generative component used in the U-KAN / U-KAN++ line of work. Local datasets, checkpoints, and generated outputs are intentionally excluded from the repository.
+This directory contains the training and sampling code for the standalone diffusion models used in the U-KAN / U-KAN++ line of work, the `images_64` preparation scripts, and the Inception Score code. The generation path of the joint U-KAN++ model is in `Seg_UKAN_plus/`. Local datasets, checkpoints, and generated outputs are intentionally excluded from the repository.
 
 ## Setup
 
@@ -19,7 +19,7 @@ pip install -r requirements.txt
 - `tools/`: simple preprocessing helpers
 - `Main.py`: training entry point
 - `Main_Test.py`: sampling / test entry point
-- `run_table11.sh`: launch script for the main BUSI / GlaS / CVC generation runs
+- `run_table11.sh`: launch script for standalone BUSI / GlaS / CVC generation runs
 
 ## Data
 

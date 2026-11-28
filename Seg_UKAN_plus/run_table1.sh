@@ -1,5 +1,5 @@
 #!/bin/bash
-# Table I: U-KAN++ 2D Segmentation on BUSI/GlaS/CVC/ISIC2018
+# FR-KAN only (segmentation-only, no STAG) on BUSI/GlaS/CVC/ISIC2018
 # 4 datasets × 3 seeds = 12 runs, distributed across 8 GPUs
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -15,7 +15,7 @@ GPU=0
 # --- BUSI (256×256) ---
 for seed in "${SEEDS[@]}"; do
   CUDA_VISIBLE_DEVICES=$GPU $PYTHON train.py \
-    --name "busi_ukanpp_seed${seed}" \
+    --name "busi_frkan_seed${seed}" \
     --dataset busi \
     --data_dir "$DATA_DIR" \
     --arch UKANPP \
@@ -32,7 +32,7 @@ done
 # --- GlaS (512×512) ---
 for seed in "${SEEDS[@]}"; do
   CUDA_VISIBLE_DEVICES=$GPU $PYTHON train.py \
-    --name "glas_ukanpp_seed${seed}" \
+    --name "glas_frkan_seed${seed}" \
     --dataset glas \
     --data_dir "$DATA_DIR" \
     --arch UKANPP \
@@ -50,7 +50,7 @@ done
 # --- CVC (256×256) ---
 for seed in "${SEEDS[@]}"; do
   CUDA_VISIBLE_DEVICES=$GPU $PYTHON train.py \
-    --name "cvc_ukanpp_seed${seed}" \
+    --name "cvc_frkan_seed${seed}" \
     --dataset cvc \
     --data_dir "$DATA_DIR" \
     --arch UKANPP \
@@ -71,7 +71,7 @@ wait
 GPU=0
 for seed in "${SEEDS[@]}"; do
   CUDA_VISIBLE_DEVICES=$GPU $PYTHON train.py \
-    --name "isic2018_ukanpp_seed${seed}" \
+    --name "isic2018_frkan_seed${seed}" \
     --dataset isic2018 \
     --data_dir "$DATA_DIR" \
     --arch UKANPP \
@@ -86,4 +86,4 @@ for seed in "${SEEDS[@]}"; do
 done
 
 wait
-echo "=== Table I experiments complete ==="
+echo "=== FR-KAN-only experiments complete ==="

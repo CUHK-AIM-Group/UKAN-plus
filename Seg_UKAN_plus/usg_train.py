@@ -1,20 +1,24 @@
 """
-Unified Seg-Gen (USG) Training Script — Table VII.
+Unified Seg-Gen (USG) Training Script — Tables I, V and VI (sampling: usg_sample.py).
 
 Shared MS-KAN encoder with:
   - Segmentation decoder head (from UKANPP)
-  - Generation decoder head (lightweight DDPM denoiser)
+  - Generation decoder head: DDPM noise predictor on the shared encoder
+    features, with FR-KAN blocks, skip connections and a timestep embedding
   - Dynamic loss balancing: lambda(t) = lambda_0 * exp(-gamma * L_seg / L_gen)
 
+In each iteration the segmentation branch receives the image and the generation
+branch receives a noise-corrupted 64x64 version of the same image (--gen_view).
+
 Modes:
-  - seg_only:  standard segmentation (reuse UKANPP, same as Table I)
-  - gen_only:  generation only using encoder features
+  - seg_only:  standard segmentation (reuse UKANPP, same as train.py)
+  - gen_only:  generation only; the segmentation decoder is not executed
   - joint:     unified framework with dynamic or fixed lambda
 
 Usage:
-    python usg_train.py --name usg_joint_dynamic_seed2981 --dataset busi \
+    python usg_train.py --name usg_joint_dynamic_busi_seed2981 --dataset busi \
         --mode joint --lambda_type dynamic --lambda_0 1.0 --gamma 0.5 \
-        --grid_sizes 3,5,10 --dataseed 2981
+        --grid_sizes 3,5,10 --use_stag --dataseed 2981
 """
 import argparse
 import os
@@ -22,25 +26,27 @@ import random
 import csv
 import yaml
 import math
+from contextlib import contextmanager, nullcontext
+import cv2
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.optim import lr_scheduler
 from torch.utils.data import DataLoader
 from glob import glob
-from collections import OrderedDict
-from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 
 from albumentations.augmentations import transforms
-from albumentations.core.composition import Compose, OneOf
-from albumentations import RandomRotate90, Resize, Flip
+from albumentations.augmentations import geometric
+from albumentations.core.composition import Compose
+from albumentations import RandomRotate90, Resize
 
 import archs
-from dataset import Dataset
+from dataset import Dataset, split_ids
 from losses import BCEDiceLoss
 from metrics import iou_score
-from utils import AverageMeter, str2bool
+from utils import AverageMeter
 
 
 def seed_torch(seed=1029):
@@ -54,44 +60,129 @@ def seed_torch(seed=1029):
     torch.backends.cudnn.deterministic = True
 
 
-# ---- Lightweight Generation Decoder ----
+EMBED_DIMS = [128, 160, 256]
+
+# dataset.py reads BGR images with cv2, applies albumentations Normalize with
+# these constants and then divides by 255.
+NORM_MEAN = (0.485, 0.456, 0.406)
+NORM_STD = (0.229, 0.224, 0.225)
+
+
+def to_ddpm_space(inp, size):
+    """Dataset image tensor -> x_0 in [-1, 1] at size x size (BGR channel order)."""
+    mean = inp.new_tensor(NORM_MEAN).view(1, 3, 1, 1)
+    std = inp.new_tensor(NORM_STD).view(1, 3, 1, 1)
+    img = (inp * 255 * std + mean).clamp(0, 1)
+    img = F.interpolate(img, size=(size, size), mode='bilinear',
+                        align_corners=False, antialias=True)
+    return img * 2 - 1
+
+
+def to_model_input(x):
+    """Image in [-1, 1] -> the normalized representation produced by dataset.py."""
+    mean = x.new_tensor(NORM_MEAN).view(1, 3, 1, 1)
+    std = x.new_tensor(NORM_STD).view(1, 3, 1, 1)
+    return ((x + 1) / 2 - mean) / std / 255
+
+
+# images_64 preparation of Diffusion_UKAN_plus/tools, whose folders are the FID/IS
+# reference sets: center crop (BUSI, CVC) or random crop (GlaS), then resize.
+UKAN_GEN_VIEWS = {'busi': ('center', 400), 'cvc': ('center', 288), 'glas': ('random', 64)}
+
+
+def ukan_gen_view(img, view, size):
+    """BGR uint8 image -> x_0 in [-1, 1] following UKAN_GEN_VIEWS, with random flips."""
+    if view is not None:
+        kind, crop = view
+        H, W = img.shape[:2]
+        if kind == 'center':
+            y, x = H // 2 - crop // 2, W // 2 - crop // 2
+        else:
+            y, x = random.randint(0, max(H - crop, 0)), random.randint(0, max(W - crop, 0))
+        img = img[max(y, 0):y + crop, max(x, 0):x + crop]
+    if img.shape[:2] != (size, size):
+        img = cv2.resize(img, (size, size), interpolation=cv2.INTER_AREA)
+    if random.random() < 0.5:
+        img = img[:, ::-1]
+    if random.random() < 0.5:
+        img = img[::-1]
+    img = np.ascontiguousarray(img).transpose(2, 0, 1)
+    return torch.from_numpy(img).float() / 127.5 - 1
+
+
+class USGDataset(Dataset):
+    """Segmentation sample plus x_0 of the generation branch for the same image."""
+    def __init__(self, gen_view, gen_size, **kwargs):
+        super().__init__(**kwargs)
+        self.gen_view = gen_view
+        self.gen_size = gen_size
+
+    def __getitem__(self, idx):
+        img, mask, meta = super().__getitem__(idx)
+        if self.gen_view == 'resize':
+            x_0 = to_ddpm_space(torch.from_numpy(img)[None], self.gen_size)[0]
+        else:
+            raw = cv2.imread(os.path.join(self.img_dir, meta['img_id'] + self.img_ext))
+            x_0 = ukan_gen_view(raw, self.gen_view, self.gen_size)
+        return img, mask, x_0, meta
+
+
+@contextmanager
+def frozen_bn_stats(module):
+    """BatchNorm layers normalize with, and do not update, their running statistics."""
+    bns = [m for m in module.modules()
+           if isinstance(m, nn.modules.batchnorm._BatchNorm) and m.training]
+    for m in bns:
+        m.eval()
+    try:
+        yield
+    finally:
+        for m in bns:
+            m.train()
+
+
+# ---- Generation Decoder ----
 
 class GenDecoder(nn.Module):
-    """Lightweight generation decoder that takes encoder bottleneck features
-    and predicts noise (for DDPM training).
+    """DDPM noise predictor built on the shared encoder features.
 
-    Bottleneck is at 1/32 resolution. Needs 5 upsamplings to reach full res.
+    Mirrors the segmentation decoder: FR-KAN blocks at the two token stages and
+    convolutional upsampling with the encoder skip connections. A timestep
+    embedding is added at the bottleneck and at every decoder stage. The encoder
+    downsamples before its first skip, so the noisy image itself is concatenated
+    at full resolution.
     """
-    def __init__(self, embed_dim=256, img_channels=3, T=1000):
+    def __init__(self, embed_dims=EMBED_DIMS, grid_sizes=[3, 5, 10],
+                 fusion_type='softmax', img_channels=3, T=1000):
         super().__init__()
-        ch = embed_dim
+        e0, e1, e2 = embed_dims
+        tdim = e2
 
-        # Time embedding
+        self.register_buffer('time_freqs', self._sinusoidal_embedding(T, tdim))
         self.time_embed = nn.Sequential(
-            nn.Linear(ch, ch * 4),
+            nn.Linear(tdim, tdim * 4),
             nn.SiLU(),
-            nn.Linear(ch * 4, ch),
+            nn.Linear(tdim * 4, tdim),
         )
+        # bottleneck, dec1, dec2, dec3, dec4, full resolution
+        self.time_proj = nn.ModuleList(
+            [nn.Linear(tdim, w) for w in (e2, e1, e0, e0 // 4, e0 // 8, e0 // 8)])
 
-        # Register sinusoidal position encoding for timesteps
-        self.register_buffer('time_freqs',
-                             self._sinusoidal_embedding(T, ch))
+        def fr_kan(dim):
+            return nn.ModuleList([archs.MSKANBlock(
+                dim=dim, grid_sizes=grid_sizes, fusion_type=fusion_type)])
 
-        # Upsampling path: bottleneck (ch, H/32, W/32) -> (img_channels, H, W)
-        # 5 up-blocks: 1/32 -> 1/16 -> 1/8 -> 1/4 -> 1/2 -> 1
-        self.up1 = self._up_block(ch, ch)          # 1/32 -> 1/16
-        self.up2 = self._up_block(ch, ch // 2)     # 1/16 -> 1/8
-        self.up3 = self._up_block(ch // 2, ch // 4)  # 1/8 -> 1/4
-        self.up4 = self._up_block(ch // 4, ch // 8)  # 1/4 -> 1/2
-        self.up5 = self._up_block(ch // 8, ch // 8)  # 1/2 -> 1
-
-        # Final conv to image channels
-        self.final = nn.Sequential(
-            nn.Conv2d(ch // 8, ch // 8, 3, padding=1),
-            nn.GroupNorm(8, ch // 8),
-            nn.SiLU(),
-            nn.Conv2d(ch // 8, img_channels, 1),
-        )
+        self.decoder1 = archs.D_ConvLayer(e2, e1)
+        self.dblock1 = fr_kan(e1)
+        self.dnorm3 = nn.LayerNorm(e1)
+        self.decoder2 = archs.D_ConvLayer(e1, e0)
+        self.dblock2 = fr_kan(e0)
+        self.dnorm4 = nn.LayerNorm(e0)
+        self.decoder3 = archs.D_ConvLayer(e0, e0 // 4)
+        self.decoder4 = archs.D_ConvLayer(e0 // 4, e0 // 8)
+        self.decoder5 = archs.D_ConvLayer(e0 // 8, e0 // 8)
+        self.head = archs.D_ConvLayer(e0 // 8 + img_channels, e0 // 8)
+        self.final = nn.Conv2d(e0 // 8, img_channels, kernel_size=1)
 
     def _sinusoidal_embedding(self, T, dim):
         pos = torch.arange(T).float()
@@ -101,42 +192,41 @@ class GenDecoder(nn.Module):
         emb = pos[:, None] * emb[None, :]
         return torch.cat([torch.sin(emb), torch.cos(emb)], dim=-1)  # (T, dim)
 
-    def _up_block(self, in_ch, out_ch):
-        return nn.Sequential(
-            nn.ConvTranspose2d(in_ch, out_ch, 4, stride=2, padding=1),
-            nn.GroupNorm(8, out_ch),
-            nn.SiLU(),
-            nn.Conv2d(out_ch, out_ch, 3, padding=1),
-            nn.GroupNorm(8, out_ch),
-            nn.SiLU(),
-        )
+    def _kan_stage(self, out, blocks, norm):
+        B, _, H, W = out.shape
+        out = out.flatten(2).transpose(1, 2)
+        for blk in blocks:
+            out = blk(out, H, W)
+        out = norm(out)
+        return out.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
 
-    def forward(self, encoder_feat, noisy_img, t):
+    def forward(self, bottleneck, skips, t, x_t):
         """
         Args:
-            encoder_feat: (B, C, H/32, W/32) bottleneck features from shared encoder
-            noisy_img: (B, 3, H, W) noisy image at timestep t
+            bottleneck: (B, C, h, w) bottleneck features of the noisy image x_t
+            skips: encoder skip connections (t1, t2, t3, t4, ...)
             t: (B,) integer timesteps
+            x_t: (B, 3, H, W) noisy image in [-1, 1] space
 
         Returns:
             noise_pred: (B, 3, H, W) predicted noise
         """
-        # Time conditioning
-        t_emb = self.time_freqs[t]  # (B, ch)
-        t_emb = self.time_embed(t_emb)  # (B, ch)
-        t_emb = t_emb[:, :, None, None]  # (B, ch, 1, 1)
+        t1, t2, t3, t4 = skips[:4]
+        emb = self.time_embed(self.time_freqs[t])
+        tb, td1, td2, td3, td4, td5 = [p(emb)[:, :, None, None] for p in self.time_proj]
 
-        # Add time embedding to encoder features
-        x = encoder_feat + t_emb
-
-        # Upsample: 1/32 -> full resolution
-        x = self.up1(x)   # -> 1/16
-        x = self.up2(x)   # -> 1/8
-        x = self.up3(x)   # -> 1/4
-        x = self.up4(x)   # -> 1/2
-        x = self.up5(x)   # -> 1
-
-        return self.final(x)
+        out = bottleneck + tb
+        out = F.relu(F.interpolate(self.decoder1(out), scale_factor=(2, 2), mode='bilinear'))
+        out = self._kan_stage(out + t4 + td1, self.dblock1, self.dnorm3)
+        out = F.relu(F.interpolate(self.decoder2(out), scale_factor=(2, 2), mode='bilinear'))
+        out = self._kan_stage(out + t3 + td2, self.dblock2, self.dnorm4)
+        out = F.relu(F.interpolate(self.decoder3(out), scale_factor=(2, 2), mode='bilinear'))
+        out = out + t2 + td3
+        out = F.relu(F.interpolate(self.decoder4(out), scale_factor=(2, 2), mode='bilinear'))
+        out = out + t1 + td4
+        out = F.relu(F.interpolate(self.decoder5(out), scale_factor=(2, 2), mode='bilinear'))
+        out = self.head(torch.cat([out + td5, x_t], dim=1))
+        return self.final(out)
 
 
 # ---- DDPM Utilities ----
@@ -205,6 +295,7 @@ class USGModel(nn.Module):
         m = self.seg_model
         t1, t2, t3, t4, H, W = skips
         B = bottleneck.shape[0]
+        m.last_stag_maps = {}
 
         out = F.relu(F.interpolate(m.decoder1(bottleneck), scale_factor=(2, 2), mode='bilinear'))
         out = torch.add(out, t4)
@@ -214,6 +305,10 @@ class USGModel(nn.Module):
             out = blk(out, H2, W2)
         out = m.dnorm3(out)
         out = out.reshape(B, H2, W2, -1).permute(0, 3, 1, 2).contiguous()
+        if m.stag_dec1 is not None:
+            stag_map = m._collect_stag_map(m.dblock1)
+            out, gate = m.stag_dec1(out, stag_map, H2, W2, detach=m.stag_detach)
+            m.last_stag_maps['dec1'] = gate
 
         out = F.relu(F.interpolate(m.decoder2(out), scale_factor=(2, 2), mode='bilinear'))
         out = torch.add(out, t3)
@@ -223,6 +318,10 @@ class USGModel(nn.Module):
             out = blk(out, H3, W3)
         out = m.dnorm4(out)
         out = out.reshape(B, H3, W3, -1).permute(0, 3, 1, 2).contiguous()
+        if m.stag_dec2 is not None:
+            stag_map = m._collect_stag_map(m.dblock2)
+            out, gate = m.stag_dec2(out, stag_map, H3, W3, detach=m.stag_detach)
+            m.last_stag_maps['dec2'] = gate
 
         out = F.relu(F.interpolate(m.decoder3(out), scale_factor=(2, 2), mode='bilinear'))
         out = torch.add(out, t2)
@@ -232,20 +331,48 @@ class USGModel(nn.Module):
 
         return m.final(out)
 
-    def decode_gen(self, bottleneck, noisy_img, t):
+    def decode_gen(self, bottleneck, skips, t, x_t):
         """Run generation decoder."""
-        return self.gen_decoder(bottleneck, noisy_img, t)
+        return self.gen_decoder(bottleneck, skips, t, x_t)
 
-    def forward(self, x, mode='seg', noisy_img=None, t=None):
-        bottleneck, skips = self.encode(x)
+    def forward(self, x, mode='seg', t=None):
+        """mode='seg': x is a dataset image tensor; mode='gen': x is x_t in [-1, 1]."""
         if mode == 'seg':
-            return self.decode_seg(bottleneck, skips)
+            return self.decode_seg(*self.encode(x))
         elif mode == 'gen':
-            return self.decode_gen(bottleneck, noisy_img, t)
-        elif mode == 'both':
-            seg_out = self.decode_seg(bottleneck, skips)
-            gen_out = self.decode_gen(bottleneck, noisy_img, t)
-            return seg_out, gen_out
+            bottleneck, skips = self.encode(to_model_input(x))
+            return self.decode_gen(bottleneck, skips, t, x)
+        raise ValueError(f'Unknown mode: {mode}')
+
+
+def seg_metrics(model, loader, device):
+    """Mean IoU and Dice of the segmentation path over a loader."""
+    iou_meter = AverageMeter()
+    dice_meter = AverageMeter()
+    model.eval()
+    with torch.no_grad():
+        for inp, mask, _ in loader:
+            inp = inp.to(device)
+            mask = mask.to(device)
+            seg_out = model(inp, mode='seg')
+            iou, dice, _ = iou_score(seg_out, mask)
+            iou_meter.update(iou, inp.size(0))
+            dice_meter.update(dice, inp.size(0))
+    return iou_meter.avg, dice_meter.avg
+
+
+def build_model(config):
+    """USG model from a training config (args of this script)."""
+    grid_sizes = [int(g) for g in str(config['grid_sizes']).split(',')]
+    seg_model = archs.UKANPP(
+        num_classes=1, input_channels=3, deep_supervision=False,
+        embed_dims=EMBED_DIMS, grid_sizes=grid_sizes,
+        fusion_type=config['fusion_type'],
+        use_stag=config['use_stag'], stag_stages=config['stag_stages'],
+        stag_alpha=config['stag_alpha'], stag_norm=config['stag_norm'])
+    gen_decoder = GenDecoder(embed_dims=EMBED_DIMS, grid_sizes=grid_sizes,
+                             fusion_type=config['fusion_type'], T=config['T'])
+    return USGModel(seg_model, gen_decoder)
 
 
 def parse_args():
@@ -265,6 +392,13 @@ def parse_args():
     # Architecture
     parser.add_argument('--grid_sizes', type=str, default='3,5,10')
     parser.add_argument('--fusion_type', default='softmax')
+    parser.add_argument('--use_stag', action='store_true',
+                        help='enable STAG in the segmentation decoder')
+    parser.add_argument('--stag_stages', default='dec', type=str,
+                        choices=['all', 'dec', 'dec1', 'dec2', 'dec12', 'none'])
+    parser.add_argument('--stag_alpha', default=0.5, type=float)
+    parser.add_argument('--stag_norm', default='minmax', type=str,
+                        choices=['minmax', 'sigmoid', 'none'])
 
     # USG specific
     parser.add_argument('--mode', default='joint',
@@ -279,10 +413,19 @@ def parse_args():
                         help='Gamma for dynamic lambda: lambda_0 * exp(-gamma * L_seg/L_gen)')
     parser.add_argument('--T', type=int, default=1000,
                         help='Diffusion timesteps')
+    parser.add_argument('--gen_size', type=int, default=64,
+                        help='Image size of the generation branch')
+    parser.add_argument('--gen_view', default='ukan', choices=['ukan', 'resize'],
+                        help='ukan: images_64 preparation of Diffusion_UKAN_plus/tools for BUSI, '
+                             'GlaS and CVC (whole image for other datasets); resize: the '
+                             'segmentation input resized to gen_size')
 
     # Optimizer
     parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--kan_lr', type=float, default=1e-2)
+    parser.add_argument('--weight_decay', type=float, default=1e-4)
+    parser.add_argument('--kan_weight_decay', type=float, default=1e-4)
+    parser.add_argument('--min_lr', type=float, default=1e-5)
 
     return parser.parse_args()
 
@@ -292,7 +435,6 @@ def main():
     seed_torch(args.dataseed)
 
     config = vars(args)
-    grid_sizes = [int(g) for g in args.grid_sizes.split(',')]
 
     output_path = os.path.join(args.output_dir, args.name)
     os.makedirs(output_path, exist_ok=True)
@@ -303,28 +445,10 @@ def main():
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    # Build model
-    seg_model = archs.UKANPP(
-        num_classes=1, input_channels=3, deep_supervision=False,
-        embed_dims=[128, 160, 256], grid_sizes=grid_sizes,
-        fusion_type=args.fusion_type)
-
-    embed_dims = [128, 160, 256]
-    # Bottleneck is embed_dims[2] = 256 channels at 1/16 resolution
-    gen_decoder = GenDecoder(embed_dim=embed_dims[2], img_channels=3, T=args.T)
-
-    model = USGModel(seg_model, gen_decoder).to(device)
+    model = build_model(config).to(device)
     ddpm = SimpleDDPM(T=args.T, device=device)
 
     # Optimizer with dual learning rates
-    kan_params, other_params = [], []
-    for name, param in model.named_parameters():
-        if 'KANLinear' in type(param).__name__ or 'kan' in name.lower():
-            kan_params.append(param)
-        else:
-            other_params.append(param)
-
-    # Simpler grouping: check module type
     kan_param_ids = set()
     for name, module in model.named_modules():
         if 'KANLinear' in type(module).__name__:
@@ -335,9 +459,10 @@ def main():
     other_params = [p for p in model.parameters() if id(p) not in kan_param_ids]
 
     optimizer = torch.optim.Adam([
-        {'params': kan_params, 'lr': args.kan_lr},
-        {'params': other_params, 'lr': args.lr},
+        {'params': kan_params, 'lr': args.kan_lr, 'weight_decay': args.kan_weight_decay},
+        {'params': other_params, 'lr': args.lr, 'weight_decay': args.weight_decay},
     ])
+    scheduler = lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=args.min_lr)
 
     seg_criterion = BCEDiceLoss()
 
@@ -349,17 +474,13 @@ def main():
 
     img_ids = sorted(glob(os.path.join(args.data_dir, dataset_name, 'images', '*' + img_ext)))
     img_ids = [os.path.splitext(os.path.basename(p))[0] for p in img_ids]
-    train_ids, val_ids = train_test_split(img_ids, test_size=0.2,
-                                          random_state=args.dataseed)
+    train_ids = split_ids(img_ids, args.data_dir, dataset_name, 'train', args.dataseed)
+    val_ids = split_ids(img_ids, args.data_dir, dataset_name, 'val', args.dataseed)
 
     train_transform = Compose([
         RandomRotate90(),
-        Flip(),
+        geometric.transforms.HorizontalFlip(p=0.5),
         Resize(args.input_h, args.input_w),
-        OneOf([
-            transforms.HueSaturationValue(),
-            transforms.RandomBrightnessContrast(),
-        ], p=0.5),
         transforms.Normalize(),
     ])
     val_transform = Compose([
@@ -367,7 +488,9 @@ def main():
         transforms.Normalize(),
     ])
 
-    train_ds = Dataset(
+    gen_view = 'resize' if args.gen_view == 'resize' else UKAN_GEN_VIEWS.get(dataset_name)
+    train_ds = USGDataset(
+        gen_view=gen_view, gen_size=args.gen_size,
         img_ids=train_ids,
         img_dir=os.path.join(args.data_dir, dataset_name, 'images'),
         mask_dir=os.path.join(args.data_dir, dataset_name, 'masks'),
@@ -390,7 +513,7 @@ def main():
     with open(log_path, 'w', newline='') as f:
         writer = csv.writer(f)
         writer.writerow(['epoch', 'lr', 'train_loss', 'seg_loss', 'gen_loss',
-                          'lambda_gen', 'val_iou', 'val_dice'])
+                         'lambda_gen', 'val_iou', 'val_dice'])
 
     best_iou = 0
     running_seg_loss = 1.0
@@ -404,9 +527,10 @@ def main():
         lambda_meter = AverageMeter()
 
         pbar = tqdm(train_loader, desc='Epoch {}/{}'.format(epoch + 1, args.epochs))
-        for inp, mask, _ in pbar:
+        for inp, mask, x_0, _ in pbar:
             inp = inp.to(device)
             mask = mask.to(device)
+            x_0 = x_0.to(device)
 
             # Compute dynamic lambda
             if args.lambda_type == 'dynamic':
@@ -425,15 +549,13 @@ def main():
                 loss = loss + seg_l
 
             if args.mode in ['gen_only', 'joint']:
-                # Create noisy version of input images for diffusion
-                x_0 = inp * 2 - 1  # normalize to [-1, 1] (images are [0,1] after Normalize)
+                # Noise-corrupted version of the same images for the generation branch
                 t = torch.randint(0, args.T, (inp.shape[0],), device=device)
                 x_t, noise = ddpm.q_sample(x_0, t)
-
-                # Get encoder features (shared)
-                bottleneck, skips = model.encode(inp)
-                noise_pred = model.decode_gen(bottleneck.detach() if args.mode == 'gen_only' else bottleneck,
-                                              x_t, t)
+                # In joint training the shared encoder keeps the BatchNorm statistics
+                # of the segmentation inputs, which are used at evaluation time.
+                with frozen_bn_stats(model.seg_model) if args.mode == 'joint' else nullcontext():
+                    noise_pred = model(x_t, mode='gen', t=t)
                 gen_l = F.mse_loss(noise_pred, noise)
 
                 if args.mode == 'joint':
@@ -459,38 +581,52 @@ def main():
                              gen='{:.4f}'.format(gen_loss_meter.avg),
                              lam='{:.4f}'.format(lambda_meter.avg))
 
-        # Validation (segmentation metrics)
-        model.eval()
-        iou_meter = AverageMeter()
-        dice_meter = AverageMeter()
+        lr = optimizer.param_groups[1]['lr']
+        scheduler.step()
 
-        with torch.no_grad():
-            for inp, mask, _ in val_loader:
-                inp = inp.to(device)
-                mask = mask.to(device)
-                seg_out = model(inp, mode='seg')
-                iou, dice, _ = iou_score(seg_out, mask)
-                iou_meter.update(iou, inp.size(0))
-                dice_meter.update(dice, inp.size(0))
+        # Validation (segmentation metrics); not defined for generation-only training
+        val_iou, val_dice = 0.0, 0.0
+        if args.mode != 'gen_only':
+            val_iou, val_dice = seg_metrics(model, val_loader, device)
 
         print('Epoch {}: loss={:.4f} seg={:.4f} gen={:.4f} lam={:.4f} | val_iou={:.4f} val_dice={:.4f}'.format(
             epoch + 1, loss_meter.avg, seg_loss_meter.avg, gen_loss_meter.avg,
-            lambda_meter.avg, iou_meter.avg, dice_meter.avg))
+            lambda_meter.avg, val_iou, val_dice))
 
         # Log
         with open(log_path, 'a', newline='') as f:
             writer = csv.writer(f)
-            writer.writerow([epoch + 1, args.lr, loss_meter.avg,
-                              seg_loss_meter.avg, gen_loss_meter.avg,
-                              lambda_meter.avg, iou_meter.avg, dice_meter.avg])
+            writer.writerow([epoch + 1, lr, loss_meter.avg,
+                             seg_loss_meter.avg, gen_loss_meter.avg,
+                             lambda_meter.avg, val_iou, val_dice])
 
-        # Save best model
-        if iou_meter.avg > best_iou:
-            best_iou = iou_meter.avg
+        # Save the best segmentation model; generation-only keeps the latest epoch
+        if args.mode == 'gen_only' or val_iou > best_iou:
+            best_iou = val_iou
             torch.save(model.state_dict(),
                        os.path.join(output_path, 'model.pth'))
 
     print('Best val IoU: {:.4f}'.format(best_iou))
+
+    # Separate test split (e.g. official ISIC 2018): evaluate the best validation checkpoint
+    test_ids = split_ids(img_ids, args.data_dir, dataset_name, 'test', args.dataseed)
+    if args.mode != 'gen_only' and test_ids != val_ids:
+        test_ds = Dataset(
+            img_ids=test_ids,
+            img_dir=os.path.join(args.data_dir, dataset_name, 'images'),
+            mask_dir=os.path.join(args.data_dir, dataset_name, 'masks'),
+            img_ext=img_ext, mask_ext=mask_ext,
+            num_classes=1, transform=val_transform)
+        test_loader = DataLoader(test_ds, batch_size=args.batch_size,
+                                 shuffle=False, num_workers=args.num_workers)
+        model.load_state_dict(torch.load(os.path.join(output_path, 'model.pth'),
+                                         map_location=device))
+        test_iou, test_dice = seg_metrics(model, test_loader, device)
+        with open(os.path.join(output_path, 'test.csv'), 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['iou', 'dice'])
+            writer.writerow([test_iou, test_dice])
+        print('Test ({} images): IoU {:.4f} - Dice {:.4f}'.format(len(test_ids), test_iou, test_dice))
 
 
 if __name__ == '__main__':

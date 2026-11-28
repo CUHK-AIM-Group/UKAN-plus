@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate predictions for baseline models (smp architectures)."""
+"""Generate predictions for baseline models (train_baseline.py checkpoints)."""
 import argparse, os, yaml
 import numpy as np
 import torch
@@ -7,16 +7,9 @@ from glob import glob
 from tqdm import tqdm
 from albumentations import Resize, Compose
 from albumentations.augmentations import transforms
-import segmentation_models_pytorch as smp
 import cv2
+from baselines import build_baseline_2d
 from dataset import Dataset
-
-ARCH_MAP = {
-    'unet': lambda: smp.Unet(encoder_name='resnet34', encoder_weights='imagenet', in_channels=3, classes=1),
-    'attunet': lambda: smp.Unet(encoder_name='resnet34', encoder_weights='imagenet', in_channels=3, classes=1, decoder_attention_type='scse'),
-    'unetpp': lambda: smp.UnetPlusPlus(encoder_name='resnet34', encoder_weights='imagenet', in_channels=3, classes=1),
-    'transunet': lambda: smp.Unet(encoder_name='mit_b2', encoder_weights='imagenet', in_channels=3, classes=1),
-}
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -34,7 +27,7 @@ def main():
         config = yaml.safe_load(f)
 
     # Model
-    model = ARCH_MAP[config['arch']]().cuda()
+    model = build_baseline_2d(config['arch'], config['input_h'], pretrained=False).cuda()
     model.load_state_dict(torch.load(args.checkpoint))
     model.eval()
 

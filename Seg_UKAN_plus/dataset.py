@@ -4,6 +4,23 @@ import cv2
 import numpy as np
 import torch
 import torch.utils.data
+from sklearn.model_selection import train_test_split
+
+
+def split_ids(img_ids, data_dir, dataset, split, seed):
+    """Image ids of the 'train', 'val' or 'test' split of a 2D dataset.
+
+    If <data_dir>/<dataset>/splits/ exists, <split>.txt in it lists the ids, one file
+    name without extension per line (e.g. the official ISIC 2018 split written by
+    prepare_isic2018.py). Otherwise img_ids are split 80/20 at random with `seed`, and
+    'val' and 'test' are the same 20%.
+    """
+    split_dir = os.path.join(data_dir, dataset, 'splits')
+    if os.path.isdir(split_dir):
+        with open(os.path.join(split_dir, split + '.txt')) as f:
+            return [line.strip() for line in f if line.strip()]
+    train_ids, val_ids = train_test_split(img_ids, test_size=0.2, random_state=seed)
+    return train_ids if split == 'train' else val_ids
 
 
 class Dataset(torch.utils.data.Dataset):

@@ -11,13 +11,12 @@ import torch.backends.cudnn as cudnn
 import yaml
 from albumentations.augmentations import transforms
 from albumentations.core.composition import Compose
-from sklearn.model_selection import train_test_split
 from tqdm import tqdm
 from collections import OrderedDict
 
 import archs
 
-from dataset import Dataset
+from dataset import Dataset, split_ids
 from metrics import iou_score
 from utils import AverageMeter
 from albumentations import RandomRotate90,Resize
@@ -30,6 +29,8 @@ def parse_args():
 
     parser.add_argument('--name', default=None, help='model name')
     parser.add_argument('--output_dir', default='outputs', help='ouput dir')
+    parser.add_argument('--stag_alpha', default=None, type=float,
+                        help='override the STAG gate strength at inference (weights unchanged)')
             
     args = parser.parse_args()
 
@@ -65,7 +66,14 @@ def main():
         model = archs.__dict__[config['arch']](
             config['num_classes'], config['input_channels'], config['deep_supervision'],
             embed_dims=config['input_list'], no_kan=config.get('no_kan', False),
-            grid_sizes=grid_sizes, fusion_type=config.get('fusion_type', 'softmax'))
+            grid_sizes=grid_sizes, fusion_type=config.get('fusion_type', 'softmax'),
+            ms_stages=config.get('ms_stages', 'all'),
+            cross_branch_attn=config.get('cross_branch_attn', False),
+            use_stag=config.get('use_stag', False),
+            stag_stages=config.get('stag_stages', 'dec'),
+            stag_alpha=config.get('stag_alpha', 0.5),
+            stag_detach=config.get('stag_detach', False),
+            stag_norm=config.get('stag_norm', 'minmax'))
     else:
         model = archs.__dict__[config['arch']](
             config['num_classes'], config['input_channels'], config['deep_supervision'],
@@ -92,7 +100,7 @@ def main():
     # img_ids.sort()
     img_ids = [os.path.splitext(os.path.basename(p))[0] for p in img_ids]
 
-    _, val_img_ids = train_test_split(img_ids, test_size=0.2, random_state=config['dataseed'])
+    val_img_ids = split_ids(img_ids, config['data_dir'], config['dataset'], 'test', config['dataseed'])
 
     ckpt = torch.load(f'{args.output_dir}/{args.name}/model.pth')
 
@@ -113,6 +121,14 @@ def main():
         model.load_state_dict(ckpt, strict=False)
         
     model.eval()
+
+    if args.stag_alpha is not None:
+        gates = [m for m in model.modules() if isinstance(m, archs.STAGGate)]
+        if not gates:
+            raise ValueError('--stag_alpha was given but the model has no STAG gates')
+        for gate in gates:
+            gate.alpha = args.stag_alpha
+        print('STAG alpha set to %g on %d gate(s)' % (args.stag_alpha, len(gates)))
 
     val_transform = Compose([
         Resize(config['input_h'], config['input_w']),

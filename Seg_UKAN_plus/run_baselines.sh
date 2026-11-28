@@ -1,5 +1,8 @@
 #!/bin/bash
 # Train baseline methods for qualitative comparison and table filling
+# TransUNet is the official R50-ViT-B_16 model: set TRANSUNET_DIR (and optionally
+# TRANSUNET_WEIGHTS), see baselines.py. GlaS is trained at 512x512, the others at 256x256.
+# ISIC 2018 models are trained from scratch (--no_pretrained).
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -11,6 +14,9 @@ GPU=0
 
 launch() {
   local name=$1 arch=$2 ds=$3 seed=$4
+  local size=256 extra=""
+  [ "$ds" = glas ] && size=512
+  [ "$ds" = isic2018 ] && extra="--no_pretrained"
   if [ -f "outputs/${name}/model.pth" ]; then
     echo "SKIP: ${name} (already trained)"
     return
@@ -19,6 +25,7 @@ launch() {
   echo "GPU ${GPU}: Training ${name}"
   CUDA_VISIBLE_DEVICES=${GPU} nohup $PYTHON $SCRIPT \
     --name "$name" --arch "$arch" --dataset "$ds" \
+    --input_h "$size" --input_w "$size" $extra \
     --dataseed "$seed" --epochs 400 \
     > "outputs/${name}.log" 2>&1 &
   GPU=$(( (GPU + 1) % 8 ))

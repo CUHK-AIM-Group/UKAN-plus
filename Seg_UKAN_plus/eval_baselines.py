@@ -1,21 +1,13 @@
 #!/usr/bin/env python3
-"""Evaluate all baseline models to get validation metrics."""
+"""Evaluate all baseline models on the test split (see dataset.split_ids)."""
 import os, yaml, torch
 import numpy as np
 from glob import glob
-from sklearn.model_selection import train_test_split
 from albumentations import Resize, Compose
 from albumentations.augmentations import transforms
-import segmentation_models_pytorch as smp
-from dataset import Dataset
+from baselines import BASELINES_2D, build_baseline_2d
+from dataset import Dataset, split_ids
 from metrics import iou_score
-
-ARCH_MAP = {
-    'unet': lambda: smp.Unet(encoder_name='resnet34', encoder_weights='imagenet', in_channels=3, classes=1),
-    'attunet': lambda: smp.Unet(encoder_name='resnet34', encoder_weights='imagenet', in_channels=3, classes=1, decoder_attention_type='scse'),
-    'unetpp': lambda: smp.UnetPlusPlus(encoder_name='resnet34', encoder_weights='imagenet', in_channels=3, classes=1),
-    'transunet': lambda: smp.Unet(encoder_name='mit_b2', encoder_weights='imagenet', in_channels=3, classes=1),
-}
 
 results = []
 for ckpt_dir in sorted(glob('outputs/baseline_*_s*')):
@@ -23,29 +15,15 @@ for ckpt_dir in sorted(glob('outputs/baseline_*_s*')):
         continue
 
     name = os.path.basename(ckpt_dir)
-    parts = name.replace('baseline_', '').split('_')
-    if len(parts) < 3 or not parts[-1].startswith('s'):
-        print(f"Skipping {name}: invalid format")
-        continue
-
-    seed_part = parts[-1]
-    if seed_part.startswith('seed'):
-        seed = seed_part[4:]  # Remove 'seed' prefix
-    elif seed_part.startswith('s'):
-        seed = seed_part[1:]  # Remove 's' prefix
-    else:
-        seed = seed_part
-    dataset = parts[-2]
-    arch = '_'.join(parts[:-2])
-
-    print(f"Processing {name}: arch={arch}, dataset={dataset}, seed={seed}")
-
     config_path = os.path.join(ckpt_dir, 'config.yml')
     with open(config_path) as f:
         config = yaml.safe_load(f)
+    arch, dataset, seed = config['arch'], config['dataset'], config['dataseed']
+
+    print(f"Processing {name}: arch={arch}, dataset={dataset}, seed={seed}")
 
     # Load model
-    model = ARCH_MAP[arch]().cuda()
+    model = build_baseline_2d(config['arch'], config['input_h'], pretrained=False).cuda()
     model.load_state_dict(torch.load(os.path.join(ckpt_dir, 'model.pth')))
     model.eval()
 
@@ -54,7 +32,7 @@ for ckpt_dir in sorted(glob('outputs/baseline_*_s*')):
     mask_ext = '_mask.png' if dataset == 'busi' else '.png'
     img_ids = sorted(glob(os.path.join(config['data_dir'], dataset, 'images', '*' + img_ext)))
     img_ids = [os.path.splitext(os.path.basename(p))[0] for p in img_ids]
-    _, val_ids = train_test_split(img_ids, test_size=0.2, random_state=int(seed))
+    val_ids = split_ids(img_ids, config['data_dir'], dataset, 'test', int(seed))
 
     val_transform = Compose([Resize(config['input_h'], config['input_w']), transforms.Normalize()])
     val_dataset = Dataset(img_ids=val_ids,
@@ -86,7 +64,7 @@ df = pd.DataFrame(results)
 print("\n" + "="*80)
 print("SUMMARY (Dice / IoU)")
 print("="*80)
-for arch in ['unet', 'attunet', 'unetpp', 'transunet']:
+for arch in BASELINES_2D:
     for ds in ['busi', 'isic2018', 'glas', 'cvc']:
         subset = df[(df['arch'] == arch) & (df['dataset'] == ds)]
         if len(subset) > 0:

@@ -16,10 +16,16 @@ for ckpt_dir in sorted(glob('outputs/baseline_*')):
     with open(config_path) as f:
         config = yaml.safe_load(f)
     
-    df = pd.read_csv(log_path)
-    best_idx = df['val_iou'].idxmax()
-    val_dice = df.loc[best_idx, 'val_dice'] * 100
-    val_iou = df.loc[best_idx, 'val_iou'] * 100
+    test_path = os.path.join(ckpt_dir, 'test.csv')
+    if os.path.exists(test_path):
+        # separate test split: metrics of the best validation checkpoint
+        row = pd.read_csv(test_path).iloc[0]
+        val_dice, val_iou = row['dice'] * 100, row['iou'] * 100
+    else:
+        df = pd.read_csv(log_path)
+        best_idx = df['val_iou'].idxmax()
+        val_dice = df.loc[best_idx, 'val_dice'] * 100
+        val_iou = df.loc[best_idx, 'val_iou'] * 100
     
     results.append({
         'arch': config['arch'],
@@ -34,7 +40,7 @@ df = pd.DataFrame(results)
 print("\n" + "="*80)
 print("SUMMARY (Dice / IoU)")
 print("="*80)
-for arch in ['unet', 'attunet', 'unetpp', 'transunet']:
+for arch in ['unet', 'attunet', 'unetpp', 'transunet', 'unext', 'rollingunet', 'umamba']:
     for ds in ['busi', 'isic2018', 'glas', 'cvc']:
         subset = df[(df['arch'] == arch) & (df['dataset'] == ds)]
         if len(subset) > 0:

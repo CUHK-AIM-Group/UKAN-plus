@@ -1,5 +1,5 @@
 #!/bin/bash
-# Table VI (v2): Redesigned MS-KAN Ablation on BUSI
+# Redesigned MS-KAN Ablation on BUSI (v2)
 # 8 independent configs × 3 seeds = 24 runs
 #
 # (a) Activation function
@@ -89,4 +89,4 @@ run_job "ablv2_ms_all_crossattn" \
     --arch UKANPP --ms_stages all --grid_sizes "3,5,10" --fusion_type softmax --cross_branch_attn
 
 wait
-echo "=== Table VI v2 ablation complete (8 configs × 3 seeds = 24 runs, plus UKAN baseline 3 runs = 27 total) ==="
+echo "=== MS-KAN v2 ablation complete (8 configs × 3 seeds = 24 runs, plus UKAN baseline 3 runs = 27 total) ==="

@@ -16,7 +16,7 @@ def main(model_config = None):
     else:
         for i in range(1):
             modelConfig["sampledImgName"] = "sampledImgName{}.png".format(i)
-            eval_tmp(modelConfig,1000) # for grid visualization
+            eval_tmp(modelConfig, modelConfig['epoch']) # for grid visualization
             # eval(modelConfig) # for metric evaluation
 
 def seed_all(args):

@@ -1,126 +1,82 @@
 """
-Table XII: Statistical Testing — paired t-test between U-KAN and U-KAN++.
+Statistical Testing — paired comparison between U-KAN and U-KAN++ (Dice).
 
-Compares 3-seed results for IoU and Dice across datasets.
+Runs are paired by seed within each dataset. For every dataset the script
+reports mean±SD of both models, the mean paired difference with its 95%
+t-interval and the paired t-test p-value, then applies the Holm correction
+across all datasets in the file.
+
+Input CSV columns (one row per dataset and seed):
+    dataset,seed,ukan_dice,ukanpp_dice
 
 Usage:
-    python stat_test.py --output_dir outputs
+    python stat_test.py --csv dice_per_seed.csv
 """
-import os
-import sys
+import argparse
 import csv
+from collections import OrderedDict
+
 import numpy as np
 from scipy import stats
 
 
-def load_best_metric(output_dir, name, metric='val_iou'):
-    """Load the best val metric from a run's log.csv."""
-    log_path = os.path.join(output_dir, name, 'log.csv')
-    if not os.path.exists(log_path):
-        return None
-    with open(log_path, 'r') as f:
-        reader = csv.DictReader(f)
-        rows = list(reader)
-    if not rows:
-        return None
-    best_row = max(rows, key=lambda r: float(r.get('val_iou', 0)))
-    return float(best_row.get(metric, 0))
+def load_pairs(csv_path):
+    """Return {dataset: [(seed, ukan_dice, ukanpp_dice), ...]} in file order."""
+    pairs = OrderedDict()
+    with open(csv_path, newline='') as f:
+        for row in csv.DictReader(f):
+            pairs.setdefault(row['dataset'], []).append(
+                (int(row['seed']), float(row['ukan_dice']), float(row['ukanpp_dice'])))
+    return pairs
 
 
-def paired_t_test(scores_a, scores_b):
-    """Paired t-test. Returns (t_stat, p_value)."""
-    if len(scores_a) != len(scores_b) or len(scores_a) < 2:
-        return float('nan'), float('nan')
-    t_stat, p_val = stats.ttest_rel(scores_a, scores_b)
-    return t_stat, p_val
+def paired_summary(base, new):
+    """Mean paired difference, its 95% t-interval, and the paired t-test p-value."""
+    diff = new - base
+    n = len(diff)
+    mean_diff = diff.mean()
+    half = stats.t.ppf(0.975, n - 1) * diff.std(ddof=1) / np.sqrt(n)
+    p = stats.ttest_rel(new, base).pvalue
+    return mean_diff, (mean_diff - half, mean_diff + half), p
+
+
+def holm(pvals):
+    """Holm step-down adjusted p-values."""
+    pvals = np.asarray(pvals, dtype=float)
+    m = len(pvals)
+    adjusted = np.empty(m)
+    running = 0.0
+    for rank, idx in enumerate(np.argsort(pvals)):
+        running = max(running, (m - rank) * pvals[idx])
+        adjusted[idx] = min(1.0, running)
+    return adjusted
 
 
 def main():
-    output_dir = sys.argv[1] if len(sys.argv) > 1 else 'outputs'
-    seeds = [2981, 6142, 1187]
-    datasets = ['busi', 'glas', 'cvc', 'isic2018']
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--csv', required=True,
+                        help='per-seed Dice with columns dataset,seed,ukan_dice,ukanpp_dice')
+    args = parser.parse_args()
 
-    # Table XII: U-KAN baseline vs U-KAN++ comparison
-    print("=" * 70)
-    print("Table XII: Paired t-test (U-KAN baseline vs U-KAN++)")
-    print("=" * 70)
-    print("{:<12} {:>8} {:>8} {:>10} {:>8} {:>8} {:>10}".format(
-        'Dataset', 'IoU_base', 'IoU_pp', 'p(IoU)', 'Dice_base', 'Dice_pp', 'p(Dice)'))
-    print("-" * 70)
+    rows = []
+    for ds, entries in load_pairs(args.csv).items():
+        entries.sort()
+        base = np.array([e[1] for e in entries])
+        new = np.array([e[2] for e in entries])
+        if len(base) < 2:
+            raise ValueError('%s: at least two paired seeds are required' % ds)
+        mean_diff, ci, p = paired_summary(base, new)
+        rows.append((ds, base, new, mean_diff, ci, p))
 
-    for ds in datasets:
-        # U-KAN++ results (from Table I runs)
-        pp_ious, pp_dices = [], []
-        for seed in seeds:
-            iou = load_best_metric(output_dir, '{}_ukanpp_seed{}'.format(ds, seed), 'val_iou')
-            dice = load_best_metric(output_dir, '{}_ukanpp_seed{}'.format(ds, seed), 'val_dice')
-            if iou is not None:
-                pp_ious.append(iou)
-                pp_dices.append(dice)
+    adjusted = holm([r[5] for r in rows])
 
-        # U-KAN baseline results (from Table VIII progressive runs)
-        base_ious, base_dices = [], []
-        for seed in seeds:
-            iou = load_best_metric(output_dir, 'progressive_ukan_baseline_seed{}'.format(seed), 'val_iou')
-            dice = load_best_metric(output_dir, 'progressive_ukan_baseline_seed{}'.format(seed), 'val_dice')
-            if iou is not None:
-                base_ious.append(iou)
-                base_dices.append(dice)
-
-        if len(pp_ious) >= 2 and len(base_ious) >= 2:
-            _, p_iou = paired_t_test(base_ious, pp_ious)
-            _, p_dice = paired_t_test(base_dices, pp_dices)
-            print("{:<12} {:>8.4f} {:>8.4f} {:>10.6f} {:>8.4f} {:>8.4f} {:>10.6f}".format(
-                ds,
-                np.mean(base_ious), np.mean(pp_ious), p_iou,
-                np.mean(base_dices), np.mean(pp_dices), p_dice))
-        elif len(pp_ious) >= 2:
-            print("{:<12} {:>8} {:>8.4f} {:>10} {:>8} {:>8.4f} {:>10}".format(
-                ds, '--', np.mean(pp_ious), '--', '--', np.mean(pp_dices), '--'))
-        else:
-            print("{:<12} {:>8} {:>8} {:>10} {:>8} {:>8} {:>10}".format(
-                ds, '--', '--', '--', '--', '--', '--'))
-
-    # Also compare ablation configs vs full U-KAN++
-    print("\n" + "=" * 70)
-    print("MS-KAN Ablation: pairwise p-values vs default [3,5,10] softmax (BUSI)")
-    print("=" * 70)
-
-    default_ious = []
-    for seed in seeds:
-        v = load_best_metric(output_dir, 'ablation_g3_5_10_softmax_seed{}'.format(seed), 'val_iou')
-        if v is not None:
-            default_ious.append(v)
-
-    ablation_configs = [
-        ("3", "softmax", "G=3"),
-        ("5", "softmax", "G=5"),
-        ("10", "softmax", "G=10"),
-        ("3_5", "softmax", "G={3,5}"),
-        ("3_5_10", "concat", "G={3,5,10} concat"),
-        ("3_5_10", "sum", "G={3,5,10} sum"),
-    ]
-
-    print("{:<25} {:>8} {:>10}".format('Config', 'IoU', 'p-value'))
-    print("-" * 45)
-
-    for grid_tag, fusion, label in ablation_configs:
-        ious = []
-        for seed in seeds:
-            v = load_best_metric(output_dir, 'ablation_g{}_{}_seed{}'.format(grid_tag, fusion, seed), 'val_iou')
-            if v is not None:
-                ious.append(v)
-
-        if len(ious) >= 2 and len(default_ious) >= 2:
-            _, p = paired_t_test(ious, default_ious)
-            print("{:<25} {:>8.4f} {:>10.6f}".format(label, np.mean(ious), p))
-        elif len(ious) >= 2:
-            print("{:<25} {:>8.4f} {:>10}".format(label, np.mean(ious), '--'))
-        else:
-            print("{:<25} {:>8} {:>10}".format(label, '--', '--'))
-
-    if len(default_ious) >= 2:
-        print("{:<25} {:>8.4f} {:>10}".format('G={3,5,10} softmax*', np.mean(default_ious), 'ref'))
+    print("{:<12} {:>15} {:>15} {:>7} {:>18} {:>8} {:>8}".format(
+        'Dataset', 'U-KAN', 'U-KAN++', 'Delta', '95% CI', 'p', 'Holm p'))
+    print("-" * 89)
+    for (ds, base, new, mean_diff, ci, p), p_holm in zip(rows, adjusted):
+        print("{:<12} {:>8.2f}±{:<6.2f} {:>8.2f}±{:<6.2f} {:>+7.2f} [{:>+7.2f}, {:>+7.2f}] {:>8.4f} {:>8.4f}".format(
+            ds, base.mean(), base.std(ddof=1), new.mean(), new.std(ddof=1),
+            mean_diff, ci[0], ci[1], p, p_holm))
 
 
 if __name__ == '__main__':

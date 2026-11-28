@@ -43,8 +43,8 @@ if __name__ == '__main__':
     parser.add_argument('--img_size', type=float, default=64) 
     parser.add_argument('--dataset_repeat', type=int, default=1) # did not use
     parser.add_argument('--seed', type=int, default=0) # did not use
-    parser.add_argument('--model', type=str, default='UKAN_Hybrid')
-    parser.add_argument('--exp_nme', type=str, default='UKAN_Hybrid')
+    parser.add_argument('--model', type=str, default='UKan_PP_Hybrid')
+    parser.add_argument('--exp_nme', type=str, default='UKan_PP_Hybrid')
     parser.add_argument('--save_root', type=str, default='./Output/') 
     args = parser.parse_args()
 

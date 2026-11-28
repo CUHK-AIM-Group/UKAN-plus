@@ -1,9 +1,9 @@
 #!/bin/bash
-# Table VIII: Progressive Ablation on BUSI
+# Fig. 7(a) and Table V: Progressive Ablation on BUSI
 # Row 1: U-KAN baseline (grid_sizes=5, original) — from AAAI paper, or re-run
 # Row 2: + MS-KAN (grid_sizes=3,5,10)
-# Row 3: + MS-KAN + SAM (post-hoc, no training needed)
-# Row 4: + MS-KAN + USG (needs usg_train.py, separate script)
+# Row 3: + MS-KAN + STAG (trained; see run_stag_400epoch.sh)
+# Row 4: + MS-KAN + STAG + USG (joint; see run_table7_usg.sh)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON="${PYTHON:-python}"
@@ -48,6 +48,6 @@ for seed in "${SEEDS[@]}"; do
 done
 
 wait
-echo "=== Table VIII progressive ablation (rows 1-2) complete ==="
-echo "Row 3 (SAM) is post-hoc analysis, no training needed."
-echo "Row 4 (USG) requires usg_train.py — run separately."
+echo "=== Progressive ablation (rows 1-2) complete ==="
+echo "Row 3 (STAG): run_stag_400epoch.sh"
+echo "Row 4 (STAG + USG): run_table7_usg.sh"

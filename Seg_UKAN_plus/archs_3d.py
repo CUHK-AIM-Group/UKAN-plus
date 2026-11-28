@@ -28,11 +28,13 @@ class DWConv3D(nn.Module):
 
 
 class PatchEmbed3D(nn.Module):
-    """3D Patch Embedding using 3D Conv."""
-    def __init__(self, vol_size=96, patch_size=3, stride=2, in_chans=64, embed_dim=128):
+    """3D Patch Embedding: P x P x P patches (P = 4) projected to tokens by a 3D conv."""
+    def __init__(self, vol_size=96, patch_size=4, stride=2, in_chans=64, embed_dim=128):
         super().__init__()
+        self.stride = stride
+        # Output size is size / stride when the size is a multiple of the stride
         self.proj = nn.Conv3d(in_chans, embed_dim, kernel_size=patch_size, stride=stride,
-                              padding=patch_size // 2)
+                              padding=(patch_size - stride) // 2)
         self.norm = nn.LayerNorm(embed_dim)
         self.apply(self._init_weights)
 
@@ -52,6 +54,10 @@ class PatchEmbed3D(nn.Module):
                 m.bias.data.zero_()
 
     def forward(self, x):
+        # Zero-pad the end of each dimension to a multiple of the stride, e.g. the
+        # depth of 1 left from a 16-slice ACDC patch, so the output is ceil(size / stride)
+        pad = [(-s) % self.stride for s in x.shape[:1:-1]]
+        x = F.pad(x, [p for q in pad for p in (0, q)])
         x = self.proj(x)
         _, _, D, H, W = x.shape
         x = x.flatten(2).transpose(1, 2)
@@ -135,6 +141,7 @@ class MSKANLayer3D(nn.Module):
                 self.fusion_conv = nn.Linear(out_features * self.num_branches, out_features)
 
         self.drop = nn.Dropout(drop)
+        self.last_stag_token_map = None
 
     def _forward_branch(self, branch, x, D, H, W):
         B, N, C = x.shape
@@ -148,20 +155,32 @@ class MSKANLayer3D(nn.Module):
 
     def forward(self, x, D, H, W):
         if self.num_branches == 1:
+            self.last_stag_token_map = None
             return self._forward_branch(self.branches[0], x, D, H, W)
 
         branch_outputs = [self._forward_branch(b, x, D, H, W) for b in self.branches]
 
+        # STAG token map: branch disagreement with the fused output, as in the 2D MSKANLayer
         if self.fusion_type == 'softmax':
             concat = torch.cat(branch_outputs, dim=-1)
             alpha = F.softmax(self.fusion_proj(concat), dim=-1)
             fused = sum(alpha[..., i:i+1] * branch_outputs[i] for i in range(self.num_branches))
+            token_map = sum(
+                alpha[..., i:i+1] * (branch_outputs[i] - fused).abs().mean(dim=-1, keepdim=True)
+                for i in range(self.num_branches))
         elif self.fusion_type == 'concat':
             fused = self.fusion_conv(torch.cat(branch_outputs, dim=-1))
+            token_map = sum(
+                (branch_outputs[i] - fused).abs().mean(dim=-1, keepdim=True)
+                for i in range(self.num_branches)) / self.num_branches
         elif self.fusion_type == 'sum':
             fused = sum(branch_outputs) / self.num_branches
+            token_map = sum(
+                (branch_outputs[i] - fused).abs().mean(dim=-1, keepdim=True)
+                for i in range(self.num_branches)) / self.num_branches
         else:
             raise ValueError(f"Unknown fusion_type: {self.fusion_type}")
+        self.last_stag_token_map = token_map
         return fused
 
 
@@ -172,6 +191,7 @@ class MSKANBlock3D(nn.Module):
         super().__init__()
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
         self.norm = norm_layer(dim)
+        self.last_stag_token_map = None
         self.layer = MSKANLayer3D(
             in_features=dim, hidden_features=dim,
             grid_sizes=grid_sizes, spline_order=spline_order,
@@ -180,7 +200,49 @@ class MSKANBlock3D(nn.Module):
 
     def forward(self, x, D, H, W):
         x = x + self.drop_path(self.layer(self.norm(x), D, H, W))
+        self.last_stag_token_map = self.layer.last_stag_token_map
         return x
+
+
+class STAGGate3D(nn.Module):
+    """Spline Transformation Attention Gate (3D): the 1x1 gate conv becomes 1x1x1."""
+    def __init__(self, alpha=0.5, norm='minmax', eps=1e-6):
+        super().__init__()
+        self.alpha = alpha
+        self.norm = norm
+        self.eps = eps
+        self.proj = nn.Conv3d(1, 1, kernel_size=1, bias=True)
+        # Start close to identity to avoid destabilizing early training.
+        nn.init.zeros_(self.proj.weight)
+        nn.init.constant_(self.proj.bias, -4.0)
+
+    def _normalize(self, x):
+        if self.norm == 'none':
+            return x
+        if self.norm == 'sigmoid':
+            return torch.sigmoid(x)
+        if self.norm == 'minmax':
+            x_min = x.amin(dim=(2, 3, 4), keepdim=True)
+            x_max = x.amax(dim=(2, 3, 4), keepdim=True)
+            return (x - x_min) / (x_max - x_min + self.eps)
+        raise ValueError(f"Unknown STAG norm: {self.norm}")
+
+    def forward(self, feat, token_map, D, H, W, detach=False):
+        """
+        Args:
+            feat: (B, C, D, H, W)
+            token_map: (B, N, 1)
+        """
+        if token_map is None:
+            return feat, None
+
+        gate = token_map.transpose(1, 2).reshape(feat.size(0), 1, D, H, W)
+        if detach:
+            gate = gate.detach()
+        gate = self._normalize(gate)
+        gate = torch.sigmoid(self.proj(gate))
+        feat = feat * (1.0 + self.alpha * gate)
+        return feat, gate
 
 
 class UKANPP3D(nn.Module):
@@ -188,7 +250,8 @@ class UKANPP3D(nn.Module):
     def __init__(self, num_classes, input_channels=1, embed_dims=[64, 128, 256],
                  grid_sizes=[3, 5, 10], fusion_type='softmax', no_kan=False,
                  drop_rate=0., drop_path_rate=0., norm_layer=nn.LayerNorm,
-                 depths=[1, 1, 1], **kwargs):
+                 depths=[1, 1, 1], use_stag=False, stag_stages='dec', stag_alpha=0.5,
+                 stag_detach=False, stag_norm='minmax', **kwargs):
         super().__init__()
 
         kan_input_dim = embed_dims[0]
@@ -207,9 +270,9 @@ class UKANPP3D(nn.Module):
         ms_kwargs = dict(grid_sizes=grid_sizes, fusion_type=fusion_type, no_kan=no_kan)
 
         # Encoder KAN stages
-        self.patch_embed3 = PatchEmbed3D(patch_size=3, stride=2,
+        self.patch_embed3 = PatchEmbed3D(patch_size=4, stride=2,
                                          in_chans=embed_dims[0], embed_dim=embed_dims[1])
-        self.patch_embed4 = PatchEmbed3D(patch_size=3, stride=2,
+        self.patch_embed4 = PatchEmbed3D(patch_size=4, stride=2,
                                          in_chans=embed_dims[1], embed_dim=embed_dims[2])
 
         self.block1 = nn.ModuleList([MSKANBlock3D(
@@ -236,8 +299,28 @@ class UKANPP3D(nn.Module):
 
         self.final = nn.Conv3d(embed_dims[0] // 4, num_classes, kernel_size=1)
 
+        self.use_stag = use_stag
+        self.stag_detach = stag_detach
+        self.last_stag_maps = {}
+        self.stag_dec1 = None
+        self.stag_dec2 = None
+        if use_stag:
+            if stag_stages in ('all', 'dec', 'dec1', 'dec12'):
+                self.stag_dec1 = STAGGate3D(alpha=stag_alpha, norm=stag_norm)
+            if stag_stages in ('all', 'dec', 'dec2', 'dec12'):
+                self.stag_dec2 = STAGGate3D(alpha=stag_alpha, norm=stag_norm)
+
+    @staticmethod
+    def _collect_stag_map(blocks):
+        maps = [blk.last_stag_token_map for blk in blocks
+                if getattr(blk, 'last_stag_token_map', None) is not None]
+        if not maps:
+            return None
+        return torch.stack(maps, dim=0).mean(dim=0)
+
     def forward(self, x):
         B = x.shape[0]
+        self.last_stag_maps = {}
 
         # Encoder conv stages
         out = F.relu(F.max_pool3d(self.encoder1(x), 2, 2))
@@ -262,8 +345,12 @@ class UKANPP3D(nn.Module):
         out = self.norm4(out)
         out = out.reshape(B, D, H, W, -1).permute(0, 4, 1, 2, 3).contiguous()
 
-        # Decoder
-        out = F.relu(F.interpolate(self.decoder1(out), scale_factor=2, mode='trilinear', align_corners=False))
+        # Decoder: each stage is upsampled to the size of its skip connection, which is
+        # twice the input size unless a dimension was odd in the encoder
+        def up(feat, ref):
+            return F.relu(F.interpolate(feat, size=ref.shape[2:], mode='trilinear', align_corners=False))
+
+        out = up(self.decoder1(out), t4)
         out = torch.add(out, t4)
         _, _, D, H, W = out.shape
         out = out.flatten(2).transpose(1, 2)
@@ -272,7 +359,11 @@ class UKANPP3D(nn.Module):
 
         out = self.dnorm3(out)
         out = out.reshape(B, D, H, W, -1).permute(0, 4, 1, 2, 3).contiguous()
-        out = F.relu(F.interpolate(self.decoder2(out), scale_factor=2, mode='trilinear', align_corners=False))
+        if self.stag_dec1 is not None:
+            out, gate = self.stag_dec1(out, self._collect_stag_map(self.dblock1), D, H, W,
+                                       detach=self.stag_detach)
+            self.last_stag_maps['dec1'] = gate
+        out = up(self.decoder2(out), t3)
         out = torch.add(out, t3)
         _, _, D, H, W = out.shape
         out = out.flatten(2).transpose(1, 2)
@@ -281,11 +372,15 @@ class UKANPP3D(nn.Module):
 
         out = self.dnorm4(out)
         out = out.reshape(B, D, H, W, -1).permute(0, 4, 1, 2, 3).contiguous()
+        if self.stag_dec2 is not None:
+            out, gate = self.stag_dec2(out, self._collect_stag_map(self.dblock2), D, H, W,
+                                       detach=self.stag_detach)
+            self.last_stag_maps['dec2'] = gate
 
-        out = F.relu(F.interpolate(self.decoder3(out), scale_factor=2, mode='trilinear', align_corners=False))
+        out = up(self.decoder3(out), t2)
         out = torch.add(out, t2)
-        out = F.relu(F.interpolate(self.decoder4(out), scale_factor=2, mode='trilinear', align_corners=False))
+        out = up(self.decoder4(out), t1)
         out = torch.add(out, t1)
-        out = F.relu(F.interpolate(self.decoder5(out), scale_factor=2, mode='trilinear', align_corners=False))
+        out = up(self.decoder5(out), x)
 
         return self.final(out)

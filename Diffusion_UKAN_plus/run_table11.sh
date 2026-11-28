@@ -1,6 +1,7 @@
 #!/bin/bash
-# Table XI: Diffusion Generation Quality (FID/IS) on BUSI/GlaS/CVC
-# U-KAN++ (UKan_PP_Hybrid) on 3 datasets
+# Standalone diffusion model (UKan_PP_Hybrid) on BUSI/GlaS/CVC: FID and IS
+# DDPM with T = 1000 at 64x64
+# Table VI and Fig. 8 use the generation path of the joint model: Seg_UKAN_plus/run_usg_fid.sh
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON="${PYTHON:-python}"
@@ -56,9 +57,22 @@ for ds in busi glas cvc; do
 done
 wait
 
-echo "=== FID computation complete ==="
+echo "=== FID computation complete. Computing IS ==="
+
+# Compute IS for each dataset
+GPU=0
+for ds in busi glas cvc; do
+  GENS="${SCRIPT_DIR}/${SAVE_ROOT}/UKan_PP_${ds}/Gens"
+  (cd inception-score-pytorch && CUDA_VISIBLE_DEVICES=$GPU $PYTHON inception_score.py --data-root "$GENS") \
+    > "${SAVE_ROOT}/UKan_PP_${ds}/IS.txt" 2>&1 &
+  GPU=$((GPU + 1))
+done
+wait
+
+echo "=== IS computation complete ==="
 echo "Results:"
 for ds in busi glas cvc; do
   echo "--- ${ds} ---"
   cat "${SAVE_ROOT}/UKan_PP_${ds}/FID.txt"
+  cat "${SAVE_ROOT}/UKan_PP_${ds}/IS.txt"
 done

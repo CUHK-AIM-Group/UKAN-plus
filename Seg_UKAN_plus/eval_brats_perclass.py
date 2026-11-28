@@ -23,7 +23,9 @@ def eval_brats(exp_dir, data_dir, device='cuda'):
     model = UKANPP3D(
         num_classes=4, input_channels=4, embed_dims=embed_dims,
         grid_sizes=grid_sizes, fusion_type=config.get('fusion_type', 'softmax'),
-        no_kan=config.get('no_kan', False))
+        no_kan=config.get('no_kan', False),
+        use_stag=config.get('use_stag', False), stag_stages=config.get('stag_stages', 'dec'),
+        stag_alpha=config.get('stag_alpha', 0.5), stag_norm=config.get('stag_norm', 'minmax'))
     model.load_state_dict(torch.load(ckpt_path, map_location=device))
     model = model.to(device).eval()
 

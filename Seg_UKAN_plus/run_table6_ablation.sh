@@ -1,5 +1,5 @@
 #!/bin/bash
-# Table VI: MS-KAN Ablation on BUSI
+# MS-KAN Ablation on BUSI
 # 7 configs × 3 seeds = 21 runs
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -54,4 +54,4 @@ for config in "${CONFIGS[@]}"; do
 done
 
 wait
-echo "=== Table VI ablation experiments complete ==="
+echo "=== MS-KAN ablation experiments complete ==="

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Table VI: MS-KAN Ablation on BUSI — using GPU 6,7
+# MS-KAN Ablation on BUSI — using GPU 6,7
 # 7 configs × 3 seeds = 21 runs, all parallel on 2 GPUs
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -49,4 +49,4 @@ done
 
 echo "Launched $IDX ablation runs on GPU 6,7"
 wait
-echo "=== Table VI ablation experiments complete ==="
+echo "=== MS-KAN ablation experiments complete ==="
